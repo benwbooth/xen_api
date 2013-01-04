@@ -28,7 +28,7 @@ sure to pass the Xen object as the first parameter.
 
 package Xen::API;
 use RPC::XML;
-local $RPC::XML::FORCE_STRING_ENCODING = 1;
+$RPC::XML::FORCE_STRING_ENCODING = 1;
 use RPC::XML::Client;
 use IO::Prompt ();
 use Net::OpenSSH;
@@ -49,7 +49,7 @@ BEGIN {
   our %EXPORT_TAGS=(all=>\@EXPORT_OK);
   our $PACKAGE_PREFIX = __PACKAGE__;
 
-  our $VERSION = '0.01';
+  our $VERSION = '0.02';
 }
 
 =head2 prompt
@@ -191,11 +191,11 @@ BEGIN {
     my $cpu=$args{cpu};
     my $memory=$args{memory};
     my $template = $args{template} or return;
-    return if !defined $vmname || !defined $hostname;
+    die "No VM name given" if !defined $vmname;
 
     # prompt for password
-    if (!defined($password)) {
-      $password = prompt("Enter login password: ");
+    if (defined($hostname) && !defined($password)) {
+      $password = prompt("Enter login password to set hostname: ");
     }
     $lastpassword = $password;
 
@@ -223,13 +223,31 @@ BEGIN {
       $self->Xen::API::VM::set_VCPUs_at_startup($new_vm,$cpu);
     }
 
-    # set memory
+    # set memory. There seem to be two mutually incompatible APIs: One used by
+    # XenAPI 6.1, and another for earlier XenAPI versions. Try both, and
+    # hopefully one of them will succeed.
     if (defined($memory)) {
       my $mem = unformat_number($memory);
-      $self->Xen::API::VM::set_memory_dynamic_min($new_vm,$mem);
-      $self->Xen::API::VM::set_memory_dynamic_max($new_vm,$mem);
-      $self->Xen::API::VM::set_memory_static_min($new_vm,$mem);
-      $self->Xen::API::VM::set_memory_static_max($new_vm,$mem);
+
+      # new API, try this first
+      my @err;
+      eval {
+        $self->Xen::API::VM::set_memory_limits($new_vm,$mem,$mem,$mem,$mem);
+      };
+      if ($@) {
+        push @err, $@;
+        # try the old API if the new API call fails
+        eval {
+          $self->Xen::API::VM::set_memory_dynamic_min($new_vm,$mem);
+          $self->Xen::API::VM::set_memory_dynamic_max($new_vm,$mem);
+          $self->Xen::API::VM::set_memory_static_min($new_vm,$mem);
+          $self->Xen::API::VM::set_memory_static_max($new_vm,$mem);
+        };
+        if ($@) {
+          push @err, $@;
+          die "Could not set memory for $vmname: \n".join("\n",@err);
+        }
+      }
     }
 
     # provision the VM
@@ -263,7 +281,7 @@ BEGIN {
         $ssh->system({quote_args=>1, stderr_discard=>1},
           'sed','-ri','s#^HOSTNAME=.*#HOSTNAME='.$hostname.'#','/etc/sysconfig/network');
       }
-      # reboot
+      # reboot to set the new host name
       $self->Xen::API::VM::clean_reboot($new_vm);
     }
     return $new_vm;
@@ -342,7 +360,9 @@ sub destroy_vm {
   for my $vbd (@{$vms{$vm}{VBDs}||[]}) {
     my $vbd_record = $self->Xen::API::VBD::get_record($vbd);
     $self->Xen::API::VDI::destroy($vbd_record->{VDI})
-      if $vbd_record->{VDI} && $vbd_record->{VDI} ne 'OpaqueRef:NULL';
+      if $vbd_record->{VDI} 
+        && $vbd_record->{VDI} ne 'OpaqueRef:NULL'
+        && $vbd_record->{type} ne 'CD';
   }
 
   #destroy the VM
