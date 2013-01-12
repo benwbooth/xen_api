@@ -34,23 +34,23 @@ use IO::Prompt ();
 use Net::OpenSSH;
 use URI;
 use URI::QueryParam;
-use LWP::UserAgent;
 use HTTP::Request;
 use Net::HTTP;
+use HTTP::Status qw(:constants);
 use Number::Format qw(:subs);
 use FileHandle;
+use strict;
+use warnings;
 
 require Exporter;
 our @ISA = qw(Exporter);
 
-BEGIN {
-  our @EXPORT_OK=qw(bool true false string Int i4 i8 double datetime
-                 nil base64 array struct fault prompt mem xen run);
-  our %EXPORT_TAGS=(all=>\@EXPORT_OK);
-  our $PACKAGE_PREFIX = __PACKAGE__;
+our @EXPORT_OK=qw(bool true false string Int i4 i8 double datetime
+                nil base64 array struct fault prompt mem xen run);
+our %EXPORT_TAGS=(all=>\@EXPORT_OK);
+our $PACKAGE_PREFIX = __PACKAGE__;
 
-  our $VERSION = '0.02';
-}
+our $VERSION = '0.03';
 
 =head2 prompt
 
@@ -117,6 +117,7 @@ sub new {
   bless $self, $class;
 
   $uri = "http://$uri" if !URI->new($uri)->scheme;
+  $self->{host} = URI->new($uri)->host;
   $self->{uri} = $uri;
   $self->{xen} = RPC::XML::Client->new($self->{uri});
 
@@ -397,36 +398,36 @@ sub import_vm {
   # create the source and destination tasks
   my $task = $self->Xen::API::task::create("import_$filename","Import VM $filename");
 
-  # URI
-  my $uri = URI->new($self->{uri});
-  $uri->path('import');
-  $uri->query_param(session_id=>$self->{session});
-  $uri->query_param(task_id=>$task);
-  $uri->query_param(sr_uuid=>$sr_uuid) if $sr_uuid;
+  eval {
+    # URI
+    my $uri = URI->new($self->{uri});
+    $uri->path('import');
+    $uri->query_param(session_id=>$self->{session});
+    $uri->query_param(task_id=>$task);
+    $uri->query_param(sr_uuid=>$sr_uuid) if $sr_uuid;
 
-  my $net = Net::HTTP->new(Host=>$uri->host_port)
-    or die "Could not connect to host at ".$uri->host_port.": $@";
-  $net->write_request(
-    PUT=>$uri->path_query,
-    'Content-Length'=>(-s $filename));
+    my $import = Net::HTTP->new(Host=>$uri->host_port)
+      or die "Could not connect to host at ".$uri->host_port.": $@";
+    $import->write_request(
+      PUT=>$uri->path_query,
+      'User-Agent'=>'perl-Xen-API');
 
-  my $fh = FileHandle->new($filename, 'r')
-    or die "Could not open $filename for reading: $!";
-  $fh->binmode;
-  my $chunk_size = 4096;
-  while ($fh->read(my $data, $chunk_size)) {
-    $net->print($data);
-  }
-  $fh->close;
-  # check HTTP status code
-  my ($code, $message, %headers) = $net->read_response_headers;
-  $net->close;
-  die "import returned HTTP Status code: $code" if $code != 200;
+    my $fh = FileHandle->new($filename, 'r')
+      or die "Could not open $filename for reading: $!";
+    $fh->binmode;
+    $import->print($_) while <$fh>;
+    $fh->close;
+
+    # check HTTP status code
+    my ($code, $message, %headers) = $import->read_response_headers;
+    die "import returned HTTP Status code: $code" if $code != HTTP_OK;
+  };
+
+  my $task_record = $self->Xen::API::task::get_record($task);
 
   # Wait for the task status to be updated
   my $wait=0;
   my $maxwait=60;
-  my $task_record = $self->Xen::API::task::get_record($task);
   while ($task_record && ($task_record->{status}||'') eq 'pending'
            && $wait < $maxwait)
   {
@@ -434,8 +435,12 @@ sub import_vm {
     sleep 1;
     $wait++;
   }
-  $self->Xen::API::task::destroy($task) if $task_record->{status} eq 'success' || $task_record->{status} eq 'failure';
-  die "Import task returned status $task_record->{status}: ".join(', ',@{$task_record->{error_info}||[]})
+
+  $self->Xen::API::task::destroy($task);
+
+  die $@ if $@;
+  die "Import task returned status $task_record->{status}: "
+    .join(', ',@{$task_record->{error_info}||[]})
       if $task_record->{status} ne 'success';
   return '';
 }
@@ -467,15 +472,158 @@ sub export_vm {
   $uri->query_param(session_id=>$self->{session});
   $uri->query_param(task_id=>$task);
   $uri->query_param(ref=>$vm);
-  
-  my $ua = LWP::UserAgent->new;
-  my $req = HTTP::Request->new(GET=>$uri->as_string);
-  my $res = $ua->request($req, $filename);
 
+  eval {
+    # export socket connection
+    my $export = Net::HTTP->new(Host=>$uri->host_port)
+      or die "Could not connect to host at ".$uri->host_port.": $@";
+    $export->write_request(
+      GET=>$uri->path_query,
+      'User-Agent'=>'perl-Xen-API');
+
+    # check HTTP status code
+    my ($code, $message, %headers) = $export->read_response_headers;
+    die "import returned HTTP Status code: $code" if $code != HTTP_OK;
+
+    my $fh = FileHandle->new($filename, 'w')
+      or die "Could not open $filename for writing: $!";
+    $fh->binmode;
+    $fh->print($_) while <$export>;
+    $fh->close;
+  };
+  
   my $task_record = $self->Xen::API::task::get_record($task);
-  $self->Xen::API::task::destroy($task) if $task_record->{status} eq 'success' || $task_record->{status} eq 'failure';
-  die "Export task returned status $task_record->{status}: ".join(', ',@{$task_record->{error_info}||[]})
+
+  # Wait for the task status to be updated
+  my $wait=0;
+  my $maxwait=60;
+  while ($task_record && ($task_record->{status}||'') eq 'pending'
+           && $wait < $maxwait)
+  {
+    $task_record = $self->Xen::API::task::get_record($task);
+    sleep 1;
+    $wait++;
+  }
+  $self->Xen::API::task::destroy($task);
+
+  die $@ if $@;
+  die "Export task returned status $task_record->{status}: "
+    .join(', ',@{$task_record->{error_info}||[]})
       if $task_record->{status} ne 'success';
+  return '';
+}
+
+
+=head2 transfer_vm
+
+Transfer a VM from one xen server to another without creating an intermediate file.
+
+=cut
+
+sub transfer_vm {
+  my $self = shift or return;
+  my $vmname = shift or return;
+  my $dest_xen = shift or return;
+  my $sr_id = shift;
+
+  # find the VM
+  my %vms = %{$self->Xen::API::VM::get_all_records||{}};
+  my @vms = grep {
+    $vms{$_}{name_label} eq $vmname
+      || $vms{$_}{uuid} eq $vmname
+      || $_ eq $vmname} keys %vms;
+  my $vm = $vms[0] or die "Could not find vm $vmname";
+
+  # find the storage repository if specified
+  my $sr_uuid;
+  if ($sr_id) {
+    my %sr = %{$dest_xen->Xen::API::SR::get_all_records||{}};
+    my @srs = grep {
+      $sr{$_}{name_label} eq $sr_id
+        || $sr{$_}{uuid} eq $sr_id
+        || $_ eq $sr_id} keys %sr;
+    my $sr = $srs[0]
+      or die "Could not find storage repository $sr_id";
+    $sr_uuid = $sr{$sr}{uuid};
+  }
+
+  # export task
+  my $export_task = $self->Xen::API::task::create("export_$vm","Export VM $vm");
+  # import task
+  my $import_task = $dest_xen->Xen::API::task::create("import_$vm","Import VM $vm");
+
+  eval {
+    # export URI
+    my $export_uri = URI->new($self->{uri});
+    $export_uri->path('export');
+    $export_uri->query_param(session_id=>$self->{session});
+    $export_uri->query_param(task_id=>$export_task);
+    $export_uri->query_param(ref=>$vm);
+    
+    # export socket connection
+    my $export = Net::HTTP->new(Host=>$export_uri->host_port)
+      or die "Could not connect to host at ".$export_uri->host_port.": $@";
+    $export->write_request(
+      GET=>$export_uri->path_query,
+      'User-Agent'=>'perl-Xen-API');
+    { my ($code, $message, %headers) = $export->read_response_headers;
+      die "export returned HTTP Status code: $code" if $code != HTTP_OK;
+    }
+
+    # import URI
+    my $import_uri = URI->new($dest_xen->{uri});
+    $import_uri->path('import');
+    $import_uri->query_param(session_id=>$dest_xen->{session});
+    $import_uri->query_param(task_id=>$import_task);
+    $import_uri->query_param(sr_uuid=>$sr_uuid) if $sr_uuid;
+    
+    # import socket connection
+    my $import = Net::HTTP->new(Host=>$import_uri->host_port)
+      or die "Could not connect to host at ".$import_uri->host_port.": $@";
+    $import->write_request(
+      PUT=>$import_uri->path_query,
+      'User-Agent'=>'perl-Xen-API');
+
+    # transfer the VM
+    $import->print($_) while <$export>;
+
+    { my ($code, $message, %headers) = $export->read_response_headers;
+      die "export returned HTTP Status code: $code" if $code != HTTP_OK;
+    }
+  };
+
+  # get task statuses
+  my $export_task_record = $self->Xen::API::task::get_record($export_task);
+  my $import_task_record = $dest_xen->Xen::API::task::get_record($import_task);
+
+  # Wait for the task statuses to be updated
+  my $wait=0;
+  my $maxwait=60;
+  while ((($export_task_record && ($export_task_record->{status}||'') eq 'pending')
+       || ($import_task_record && ($import_task_record->{status}||'') eq 'pending'))
+    && $wait < $maxwait)
+  {
+    $export_task_record = $self->Xen::API::task::get_record($export_task);
+    $import_task_record = $dest_xen->Xen::API::task::get_record($import_task);
+    sleep 1;
+    $wait++;
+  }
+
+  # remove task statuses
+  $self->Xen::API::task::destroy($export_task);
+  $dest_xen->Xen::API::task::destroy($import_task);
+
+  # error handling
+  my @errors;
+  push @errors, $@ if $@;
+  push @errors, "Import task returned status $import_task_record->{status}: "
+    .join(', ',@{$import_task_record->{error_info}||[]})
+      if $import_task_record->{status} ne 'success';
+  push @errors, "Export task returned status $export_task_record->{status}: "
+    .join(', ',@{$export_task_record->{error_info}||[]})
+      if $export_task_record->{status} ne 'success';
+  die join("\n",@errors) if @errors;
+
   return '';
 }
 

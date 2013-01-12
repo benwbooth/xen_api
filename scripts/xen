@@ -36,7 +36,7 @@ use Pod::Find qw(pod_where);
 use FindBin;
 use lib $FindBin::Bin;
 use Xen::API qw(:all);
-local $Xen::API::PACKAGE_PREFIX = '';
+$Xen::API::PACKAGE_PREFIX = '';
 
 use RPC::XML qw(:all);
 use IO::Prompt ();
@@ -49,7 +49,7 @@ use warnings;
 
 # XenAPI seems to prefer numeric values passed as string types. So mark any
 # unknown types as strings.
-local $RPC::XML::FORCE_STRING_ENCODING=1;
+$RPC::XML::FORCE_STRING_ENCODING=1;
 
 BEGIN {
   $SIG{PIPE}=sub {die "Broken pipe\n"};
