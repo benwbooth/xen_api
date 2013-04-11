@@ -186,23 +186,17 @@ BEGIN {
     my $user = $args{user};
     $sudo=1 if !defined($sudo) && $user ne 'root';
     my $password = exists $args{password}?$args{password}:$lastpassword;
-    my $vmname = $args{vmname};
+    my $vmname = defined $args{vmname}?$args{vmname}:$args{hostname};
+    my $hostname = $args{hostname};
     my $port = $args{port};
     my $cpu=$args{cpu};
     my $memory=$args{memory};
-    my $pre_script = $args{pre_script};
-    my $post_script = $args{post_script};
-    $pre_script = do {local (@ARGV,$/) = $args{pre_script_file}; <>} 
-      if $args{pre_script_file};
-    $post_script = do {local (@ARGV,$/) = $args{post_script_file}; <>} 
-      if $args{post_script_file};
-
     my $template = $args{template} or return;
     die "No VM name given" if !defined $vmname;
 
     # prompt for password
-    if (defined($script) && !defined($password)) {
-      $password = prompt("Enter login password to run script: ");
+    if (defined($hostname) && !defined($password)) {
+      $password = prompt("Enter login password to set hostname: ");
     }
     $lastpassword = $password;
 
@@ -265,39 +259,33 @@ BEGIN {
 
     # set the hostname using SSH. This step is distro-specific, so try everything
     # and see what sticks.
-    if (defined $post_script) { 
+    if (defined $hostname) { 
+      # get the IP
+      my $ip = $self->get_ip($new_vm);
+
+      my $ssh = Net::OpenSSH->new($ip, 
+        defined($user)?(user=>$user):(), 
+        defined($password)?(password=>$password):(),
+        defined($port)?(port=>$port):(),
+        master_opts=>[-o=>'StrictHostKeyChecking=no'],
+      );
+      die "Couldn't establish SSH connection: ".$ssh->error if $ssh->error;
+      if ($sudo) {
+        $ssh->system({stdin_data=>"$password\n", quote_args=>1, stderr_discard=>1},
+          'sudo','-Sk','-p','--','sed','-ri','1,1s#^.*$#'.$hostname.'#','/etc/hostname');
+        $ssh->system({stdin_data=>"$password\n", quote_args=>1, stderr_discard=>1},
+          'sudo','-Sk','-p','--','sed','-ri','s#^HOSTNAME=.*#HOSTNAME='.$hostname.'#','/etc/sysconfig/network');
+      }
+      else {
+        $ssh->system({quote_args=>1, stderr_discard=>1},
+          'sed','-ri','1,1s#^.*$#'.$hostname.'#','/etc/hostname');
+        $ssh->system({quote_args=>1, stderr_discard=>1},
+          'sed','-ri','s#^HOSTNAME=.*#HOSTNAME='.$hostname.'#','/etc/sysconfig/network');
+      }
+      # reboot to set the new host name
+      $self->Xen::API::VM::clean_reboot($new_vm);
     }
     return $new_vm;
-  }
-}
-
-=head2 run_script
-
-Run a script or script file on a VM.
-
-=cut
-
-sub run_script {
-  my $self = shift;
-  my %args = @_;
-  return if !$args{vmname};
-
-  $args{script} = do {local (@ARGV,$/) = $args{script_file}; <>} if $args{script_file};
-  my $ip = $self->get_ip($args{vmname});
-
-  my $ssh = Net::OpenSSH->new($ip, 
-    defined($args{user})?(user=>$args{user}):(), 
-    defined($args{password})?(password=>$args{password}):(),
-    defined($args{port})?(port=>$args{port}):(),
-    master_opts=>[-o=>'StrictHostKeyChecking=no'],
-  );
-  die "Couldn't establish SSH connection: ".$ssh->error if $ssh->error;
-  if ($args{sudo} && defined($args{password})) {
-    $ssh->system({stdin_data=>"$args{password}\n$args{script}", quote_args=>1},
-      'sudo','-Sk','-p','','--',$args{shell});
-  }
-  else {
-    $ssh->system({quote_args=>1}, $args{script});
   }
 }
 
@@ -667,19 +655,6 @@ sub set_template {
   return '';
 }
 
-=head2 clone_vm
-
-Pause a running VM, clone it, then unpause it.
-
-=cut
-
-sub clone_vm {
-    my $self = shift or return;
-    my %args = @_;
-    my $vmname = defined $args{vmname}?$args{vmname}:$args{hostname};
-
-}
-
 =head2 list_vms
 
 List the VMs on this Xen server.
@@ -710,7 +685,7 @@ sub list_templates {
   my $self = shift or return;
   my $vbds_only = shift;
   my %vms = %{$self->Xen::API::VM::get_all_records||{}};
-  my @templates = grep {$vms{$_}{is_a_template} && !($vbds_only && @{$vms{$_}{VBDs}||[]})} keys %vms;
+  my @templates = grep {$vms{$_}{is_a_template} && (!$vbds_only || @{$vms{$_}{VBDs}||[]})} keys %vms;
   return map {{
     name_label=>$vms{$_}{name_label},
     uuid=>$vms{$_}{uuid},
@@ -765,7 +740,7 @@ Ben Booth, benwbooth@gmail.com
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (C) 2012 by Ben Booth
+Copyright (C) 2013 by Ben Booth
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.10.1 or,
