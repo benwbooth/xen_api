@@ -12,7 +12,7 @@ xen [-help] <command files> ...
 
 You will probably want to first instantiate a Xen connection:
 
-  $x=Xen->new('servername')
+  $x=Xen::API->new('servername')
 
 or 
 
