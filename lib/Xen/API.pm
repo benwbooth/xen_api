@@ -169,81 +169,78 @@ Returns a ref to the newly created VM.
 
 =cut
 
-BEGIN {
-  my $lastpassword;
-  sub create_vm {
-    my $self = shift or return;
+sub create_vm {
+  my $self = shift or return;
 
-    # read arguments
-    my %args = @_;
-    my $vmname = $args{vmname};
-    my $template = $args{template};
-    die "No template name given" if !defined $template;
-    my $cpu=$args{cpu};
-    my $memory=$args{memory};
-    die "No VM name given" if !defined $vmname;
+  # read arguments
+  my %args = @_;
+  my $vmname = $args{vmname};
+  my $template = $args{template};
+  die "No template name given" if !defined $template;
+  my $cpu=$args{cpu};
+  my $memory=$args{memory};
+  die "No VM name given" if !defined $vmname;
 
-    # get the list of VMs and templates in this pool
-    my %vms = %{$self->Xen::API::VM::get_all_records||{}};
-    my @templates = grep {$vms{$_}{is_a_template} && @{$vms{$_}{VBDs}||[]}} keys %vms;
+  # get the list of VMs and templates in this pool
+  my %vms = %{$self->Xen::API::VM::get_all_records||{}};
+  my @templates = grep {$vms{$_}{is_a_template} && @{$vms{$_}{VBDs}||[]}} keys %vms;
 
-    # query for the template by name or uuid
-    my @use_template = grep {
-      $vms{$_}{name_label} eq $template
-        || $vms{$_}{uuid} eq $template
-        || $_ eq $template} @templates;
-    die "No template named \"$template\"!\n" if !@use_template;
-    die "Multiple templates found matching \"$template\":\n"
-      .join(', ',map {"\"$vms{$_}{name_label}\" ($vms{$_}{uuid})"} @use_template) 
-      if @use_template>1;
-    my $use_template = $use_template[0];
+  # query for the template by name or uuid
+  my @use_template = grep {
+    $vms{$_}{name_label} eq $template
+      || $vms{$_}{uuid} eq $template
+      || $_ eq $template} @templates;
+  die "No template named \"$template\"!\n" if !@use_template;
+  die "Multiple templates found matching \"$template\":\n"
+    .join(', ',map {"\"$vms{$_}{name_label}\" ($vms{$_}{uuid})"} @use_template) 
+    if @use_template>1;
+  my $use_template = $use_template[0];
 
-    # clone the template into a new VM
-    my $new_vm = $self->Xen::API::VM::clone($use_template,$vmname);
+  # clone the template into a new VM
+  my $new_vm = $self->Xen::API::VM::clone($use_template,$vmname);
 
-    # set number of VCPUs
-    if (defined($cpu)) {
-      $self->Xen::API::VM::set_VCPUs_max($new_vm,$cpu);
-      $self->Xen::API::VM::set_VCPUs_at_startup($new_vm,$cpu);
-    }
+  # set number of VCPUs
+  if (defined($cpu)) {
+    $self->Xen::API::VM::set_VCPUs_max($new_vm,$cpu);
+    $self->Xen::API::VM::set_VCPUs_at_startup($new_vm,$cpu);
+  }
 
-    # set memory. There seem to be two mutually incompatible APIs: One used by
-    # XenAPI 6.1, and another for earlier XenAPI versions. Try both, and
-    # hopefully one of them will succeed.
-    if (defined($memory)) {
-      my $mem = unformat_number($memory);
+  # set memory. There seem to be two mutually incompatible APIs: One used by
+  # XenAPI 6.1, and another for earlier XenAPI versions. Try both, and
+  # hopefully one of them will succeed.
+  if (defined($memory)) {
+    my $mem = unformat_number($memory);
 
-      # new API, try this first
-      my @err;
+    # new API, try this first
+    my @err;
+    eval {
+      $self->Xen::API::VM::set_memory_limits($new_vm,$mem,$mem,$mem,$mem);
+    };
+    if ($@) {
+      push @err, $@;
+      # try the old API if the new API call fails
       eval {
-        $self->Xen::API::VM::set_memory_limits($new_vm,$mem,$mem,$mem,$mem);
+        $self->Xen::API::VM::set_memory_dynamic_min($new_vm,$mem);
+        $self->Xen::API::VM::set_memory_dynamic_max($new_vm,$mem);
+        $self->Xen::API::VM::set_memory_static_min($new_vm,$mem);
+        $self->Xen::API::VM::set_memory_static_max($new_vm,$mem);
       };
       if ($@) {
         push @err, $@;
-        # try the old API if the new API call fails
-        eval {
-          $self->Xen::API::VM::set_memory_dynamic_min($new_vm,$mem);
-          $self->Xen::API::VM::set_memory_dynamic_max($new_vm,$mem);
-          $self->Xen::API::VM::set_memory_static_min($new_vm,$mem);
-          $self->Xen::API::VM::set_memory_static_max($new_vm,$mem);
-        };
-        if ($@) {
-          push @err, $@;
-          die "Could not set memory for $vmname: \n".join("\n",@err);
-        }
+        die "Could not set memory for $vmname: \n".join("\n",@err);
       }
     }
-
-    # provision the VM
-    $self->Xen::API::VM::provision($new_vm);
-
-    # start the VM
-    $self->Xen::API::VM::start($new_vm,false,true); 
-
-    my $ip = $self->get_ip($new_vm);
-    print STDERR "IP address for $vmname: $ip\n";
-    return $new_vm;
   }
+
+  # provision the VM
+  $self->Xen::API::VM::provision($new_vm);
+
+  # start the VM
+  $self->Xen::API::VM::start($new_vm,false,true); 
+
+  my $ip = $self->get_ip($new_vm);
+  print STDERR "IP address for $vmname: $ip\n";
+  return $new_vm;
 }
 
 =head2 remote_script
