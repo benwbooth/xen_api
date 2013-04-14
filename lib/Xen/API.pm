@@ -50,7 +50,7 @@ our @EXPORT_OK=qw(bool true false string Int i4 i8 double datetime
 our %EXPORT_TAGS=(all=>\@EXPORT_OK);
 our $PACKAGE_PREFIX = __PACKAGE__;
 
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 =head2 prompt
 
@@ -160,16 +160,10 @@ EOS
 Create a new VM. 
 
 Arguments:
-
     - vmname - The xen name of the VM.
     - template - The template to base the VM from.
     - cpu - How many CPUs to assign
     - memory - How much memory to assign
-    - hostname - The hostname to set. Works for Debian/Ubuntu and RedHat/CentOS only.
-    - sudo - Should sudo be used to edit the hostname config file?
-    - user - SSH user name for editing the hostname config file
-    - password - SSH password for editing the hostname config file
-    - port - SSH port for editing the hostname config file
 
 Returns a ref to the newly created VM.
 
@@ -182,23 +176,12 @@ BEGIN {
 
     # read arguments
     my %args = @_;
-    my $sudo=exists $args{sudo}?$args{sudo}:1;
-    my $user = $args{user};
-    $sudo=1 if !defined($sudo) && $user ne 'root';
-    my $password = exists $args{password}?$args{password}:$lastpassword;
-    my $vmname = defined $args{vmname}?$args{vmname}:$args{hostname};
-    my $hostname = $args{hostname};
-    my $port = $args{port};
+    my $vmname = $args{vmname};
+    my $template = $args{template};
+    die "No template name given" if !defined $template;
     my $cpu=$args{cpu};
     my $memory=$args{memory};
-    my $template = $args{template} or return;
     die "No VM name given" if !defined $vmname;
-
-    # prompt for password
-    if (defined($hostname) && !defined($password)) {
-      $password = prompt("Enter login password to set hostname: ");
-    }
-    $lastpassword = $password;
 
     # get the list of VMs and templates in this pool
     my %vms = %{$self->Xen::API::VM::get_all_records||{}};
@@ -257,35 +240,75 @@ BEGIN {
     # start the VM
     $self->Xen::API::VM::start($new_vm,false,true); 
 
-    # set the hostname using SSH. This step is distro-specific, so try everything
-    # and see what sticks.
-    if (defined $hostname) { 
-      # get the IP
-      my $ip = $self->get_ip($new_vm);
-
-      my $ssh = Net::OpenSSH->new($ip, 
-        defined($user)?(user=>$user):(), 
-        defined($password)?(password=>$password):(),
-        defined($port)?(port=>$port):(),
-        master_opts=>[-o=>'StrictHostKeyChecking=no'],
-      );
-      die "Couldn't establish SSH connection: ".$ssh->error if $ssh->error;
-      if ($sudo) {
-        $ssh->system({stdin_data=>"$password\n", quote_args=>1, stderr_discard=>1},
-          'sudo','-Sk','-p','--','sed','-ri','1,1s#^.*$#'.$hostname.'#','/etc/hostname');
-        $ssh->system({stdin_data=>"$password\n", quote_args=>1, stderr_discard=>1},
-          'sudo','-Sk','-p','--','sed','-ri','s#^HOSTNAME=.*#HOSTNAME='.$hostname.'#','/etc/sysconfig/network');
-      }
-      else {
-        $ssh->system({quote_args=>1, stderr_discard=>1},
-          'sed','-ri','1,1s#^.*$#'.$hostname.'#','/etc/hostname');
-        $ssh->system({quote_args=>1, stderr_discard=>1},
-          'sed','-ri','s#^HOSTNAME=.*#HOSTNAME='.$hostname.'#','/etc/sysconfig/network');
-      }
-      # reboot to set the new host name
-      $self->Xen::API::VM::clean_reboot($new_vm);
-    }
+    my $ip = $self->get_ip($new_vm);
+    print STDERR "IP address for $vmname: $ip\n";
     return $new_vm;
+  }
+}
+
+=head2 remote_script
+
+Run a remote script on a VM guest over SSH.
+
+Arguments:
+  - remote_script - Remote script file to run on the guest via SSH
+  - vmname - Name of the VM where the script should be run
+  - user - SSH user name for running a remote command on the guest
+  - password - SSH password for running a remote command on the guest
+  - port - SSH port for running a remote command on the guest
+  - sudo - Should sudo be used to run a remote command on the guest?
+
+=cut
+
+BEGIN {
+  my $lastpassword;
+  sub remote_script {
+    my $self = shift or return;
+    my %args = @_;
+    my $vmname = $args{vmname} or return;
+    my $remote_script = $args{remote_script} or return;
+    my $user = $args{user};
+    my $port = $args{port};
+    my $sudo = $args{sudo};
+    my $password = exists($args{password})?$args{password}:$lastpassword;
+
+    # find the VM
+    my %vms = %{$self->Xen::API::VM::get_all_records||{}};
+    my @vms = grep {$vms{$_}{name_label} eq $vmname
+        || $vms{$_}{uuid} eq $vmname
+        || $_ eq $vmname} keys %vms;
+    die "Multiple VMs matched $vmname" if @vms > 1;
+    my $vm = $vms[0] or die "Could not find vm $vmname";
+    die "VM $vmname is not running" if ($vms{$vm}{powero_state}||'') ne 'Running';
+
+    # prompt for password
+    if (defined($remote_script) && !defined($password)) {
+      $password = prompt("Enter login password to run remote script on guest: ");
+    }
+    $lastpassword = $password;
+
+    my $ip = $self->get_ip($vm)
+      or die "Could not determine IP address of $vmname";
+
+    # read the contents of the file to a string
+    die "Could not read script file $remote_script" if !-r $remote_script;
+    my $remote_command = do {local(@ARGV, $/) = $remote_script; <>};
+
+    # Run the remote command using SSH.
+    my $ssh = Net::OpenSSH->new($ip, 
+      defined($user)?(user=>$user):(), 
+      defined($password)?(password=>$password):(),
+      defined($port)?(port=>$port):(),
+      master_opts=>[-o=>'StrictHostKeyChecking=no'],
+    );
+    die "Couldn't establish SSH connection: ".$ssh->error if $ssh->error;
+    if ($sudo) {
+      $ssh->system({stdin_data=>"$password\n$remote_command"},
+        'sudo -Sk -p "" -- "$SHELL"');
+    }
+    else {
+      $ssh->system({stdin_data=>$remote_command}, '"$SHELL"');
+    }
   }
 }
 
