@@ -278,11 +278,11 @@ BEGIN {
         || $_ eq $vmname} keys %vms;
     die "Multiple VMs matched $vmname" if @vms > 1;
     my $vm = $vms[0] or die "Could not find vm $vmname";
-    die "VM $vmname is not running" if ($vms{$vm}{powero_state}||'') ne 'Running';
+    die "VM $vmname is not running" if ($vms{$vm}{power_state}||'') ne 'Running';
 
     # prompt for password
-    if (defined($script) && !defined($password)) {
-      $password = prompt("Enter login password to run remote script on guest: ");
+    if ((exists($args{password}) || $sudo) && !defined($password)) {
+      $password = prompt("Enter login password: ");
     }
     $lastpassword = $password;
 
