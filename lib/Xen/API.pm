@@ -248,12 +248,12 @@ sub create_vm {
 Run a remote script on a VM guest over SSH.
 
 Arguments:
-  - script - Remote script file to run on the guest via SSH
-  - vmname - Name of the VM where the script should be run
-  - user - SSH user name for running a remote command on the guest
-  - password - SSH password for running a remote command on the guest
-  - port - SSH port for running a remote command on the guest
-  - sudo - Should sudo be used to run a remote command on the guest?
+    - script - Remote script file to run on the guest via SSH
+    - vmname - Name of the VM where the script should be run
+    - user - SSH user name for running a remote command on the guest
+    - password - SSH password for running a remote command on the guest
+    - port - SSH port for running a remote command on the guest
+    - sudo - Should sudo be used to run a remote command on the guest?
 
 =cut
 
