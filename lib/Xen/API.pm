@@ -243,12 +243,12 @@ sub create_vm {
   return $new_vm;
 }
 
-=head2 remote_script
+=head2 script
 
 Run a remote script on a VM guest over SSH.
 
 Arguments:
-  - remote_script - Remote script file to run on the guest via SSH
+  - script - Remote script file to run on the guest via SSH
   - vmname - Name of the VM where the script should be run
   - user - SSH user name for running a remote command on the guest
   - password - SSH password for running a remote command on the guest
@@ -259,15 +259,17 @@ Arguments:
 
 BEGIN {
   my $lastpassword;
-  sub remote_script {
+  sub script {
     my $self = shift or return;
     my %args = @_;
     my $vmname = $args{vmname} or return;
-    my $remote_script = $args{remote_script} or return;
+    my $script = $args{script};
+    my $command = $args{command};
     my $user = $args{user};
     my $port = $args{port};
     my $sudo = $args{sudo};
     my $password = exists($args{password})?$args{password}:$lastpassword;
+    die "No command or script was given" if !defined($command) && !defined($script);
 
     # find the VM
     my %vms = %{$self->Xen::API::VM::get_all_records||{}};
@@ -279,7 +281,7 @@ BEGIN {
     die "VM $vmname is not running" if ($vms{$vm}{powero_state}||'') ne 'Running';
 
     # prompt for password
-    if (defined($remote_script) && !defined($password)) {
+    if (defined($script) && !defined($password)) {
       $password = prompt("Enter login password to run remote script on guest: ");
     }
     $lastpassword = $password;
@@ -288,8 +290,10 @@ BEGIN {
       or die "Could not determine IP address of $vmname";
 
     # read the contents of the file to a string
-    die "Could not read script file $remote_script" if !-r $remote_script;
-    my $remote_command = do {local(@ARGV, $/) = $remote_script; <>};
+    if (defined($script) && !defined($command)) {
+      die "Could not read script file $script" if !-r $script;
+      $command = do {local(@ARGV, $/) = $script; <>};
+    }
 
     # Run the remote command using SSH.
     my $ssh = Net::OpenSSH->new($ip, 
@@ -300,11 +304,11 @@ BEGIN {
     );
     die "Couldn't establish SSH connection: ".$ssh->error if $ssh->error;
     if ($sudo) {
-      $ssh->system({stdin_data=>"$password\n$remote_command"},
+      $ssh->system({stdin_data=>"$password\n$command"},
         'sudo -Sk -p "" -- "$SHELL"');
     }
     else {
-      $ssh->system({stdin_data=>$remote_command}, '"$SHELL"');
+      $ssh->system({stdin_data=>$command}, '"$SHELL"');
     }
   }
 }
