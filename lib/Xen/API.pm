@@ -50,7 +50,7 @@ our @EXPORT_OK=qw(bool true false string Int i4 i8 double datetime
 our %EXPORT_TAGS=(all=>\@EXPORT_OK);
 our $PACKAGE_PREFIX = __PACKAGE__;
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 =head2 prompt
 

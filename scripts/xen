@@ -65,7 +65,7 @@ my $repl = Devel::REPL->new;
 $repl->load_plugin($_) for (qw(
     Colors Completion CompletionDriver::INC CompletionDriver::LexEnv
     CompletionDriver::Keywords CompletionDriver::Methods History
-    LexEnv DDS Packages Commands MultiLine::PPI ReadLineHistory
+    LexEnv DDC Packages Commands MultiLine::PPI ReadLineHistory
   ));
 $repl->eval('no strict; no warnings; package main');
 
