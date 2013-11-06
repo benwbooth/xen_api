@@ -1,5 +1,17 @@
-Revision history for Xen-API
+Revision history for Perl module Xen::API
 
-0.01    Date/time
-        First version, released on an unsuspecting world.
+0.07 2013-11-06
+
+0.06 2013-06-28
+
+0.05 2013-04-14
+
+0.04 2013-04-11
+
+0.03 2013-01-11
+
+0.02 2013-01-04
+
+0.01 2012-11-19
+    - First release to CPAN
 
