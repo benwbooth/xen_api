@@ -50,7 +50,7 @@ our @EXPORT_OK=qw(bool true false string Int i4 i8 double datetime
 our %EXPORT_TAGS=(all=>\@EXPORT_OK);
 our $PACKAGE_PREFIX = __PACKAGE__;
 
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 
 =head2 prompt
 
@@ -123,13 +123,15 @@ sub new {
 
   # set up autoload packages for Xen API.
   my %seen;
+  my $listMethods = $self->{xen}->simple_request('system.listMethods');
+  die $RPC::XML::ERROR if $RPC::XML::ERROR;
   my %classes = 
     map {(
       __PACKAGE__."::$_"=>__PACKAGE__,
       $PACKAGE_PREFIX? ("${PACKAGE_PREFIX}::$_"=>$PACKAGE_PREFIX) : ($_=>undef), 
     )}
     map {s/\.[^.]*$//; s/\./::/g; !$seen{$_}++?$_:()} 
-    @{$self->{xen}->simple_request('system.listMethods')||[]};
+    @{$listMethods||[]};
   for my $c (keys %classes) {
     my $package = $classes{$c};
     my $eval = <<EOS;
@@ -150,8 +152,9 @@ EOS
   $self->{user} = $user;
   $password = prompt("Enter xen admin password for ".$self->{uri}.": ") 
     if !defined($password);
-  $self->{session} = $self->value(
-    $self->{xen}->simple_request('session.login_with_password',$user,$password));
+  my $response = $self->{xen}->simple_request('session.login_with_password',$user,$password);
+  die $RPC::XML::ERROR if $RPC::XML::ERROR;
+  $self->{session} = $self->value($response);
   return $self;
 }
 
@@ -753,7 +756,9 @@ sub value {
 sub request {
   my $self = shift or return;
   my $request = shift or return;
-  return $self->value($self->{xen}->simple_request($request, $self->{session}, @_));
+  my $response = $self->{xen}->simple_request($request, $self->{session}, @_);
+  die $RPC::XML::ERROR if $RPC::XML::ERROR;
+  return $self->value($response);
 }
 
 1;
