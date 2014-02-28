@@ -50,7 +50,7 @@ our @EXPORT_OK=qw(bool true false string Int i4 i8 double datetime
 our %EXPORT_TAGS=(all=>\@EXPORT_OK);
 our $PACKAGE_PREFIX = __PACKAGE__;
 
-our $VERSION = '0.07';
+our $VERSION = '0.08';
 
 =head2 prompt
 
@@ -352,7 +352,7 @@ sub _get_ip {
     eval {
       my $vgm = $self->Xen::API::VM::get_guest_metrics($vm);
       my $net = $self->Xen::API::VM_guest_metrics::get_networks($vgm);
-      $ip = $net->{'0/ip'} if $net;
+      $ip = $net->{'0/ip'} || $net->{'1/ip'} || $net->{'2/ip'} || $net->{'3/ip'} if $net;
     };
     $wait++;
     sleep 1 if !$ip && $wait < $maxwait;
